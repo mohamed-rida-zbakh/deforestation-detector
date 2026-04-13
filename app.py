@@ -1,6 +1,6 @@
 import streamlit as st
 import ee
-import geemap.foliumap as geemap
+import geomap.foliumap as geomap
 import pandas as pd
 import plotly.express as px
 import json
