@@ -31,17 +31,22 @@ st.markdown("---")
 def init_gee():
     """Initialise la connexion à Google Earth Engine"""
     try:
-        # Vérifier si on est sur Streamlit Cloud avec secrets
-        if st.secrets.get("GEE_SERVICE_ACCOUNT"):
-            service_account_info = json.loads(st.secrets["GEE_SERVICE_ACCOUNT"])
+        if "GOOGLE_CREDENTIALS" in st.secrets:
+            creds_json = st.secrets["GOOGLE_CREDENTIALS"]
+            creds_info = json.loads(creds_json)
             credentials = ee.ServiceAccountCredentials(
-                service_account_info["client_email"],
-                key_data=st.secrets["GEE_SERVICE_ACCOUNT"]
+                email    = creds_info["client_email"],
+                key_data = creds_json
             )
             ee.Initialize(credentials)
-            st.success("✅ Google Earth Engine connecté avec succès !")
+            return True
         else:
-            # Mode développement local
+            ee.Initialize()
+            return True
+    except Exception as e:
+        st.error(f"❌ Erreur de connexion GEE : {e}")
+        st.info("Vérifiez que les secrets Streamlit sont configurés")
+        return False
             ee.Initialize()
             st.info("🔧 Mode développement - GEE configuré localement")
         return True
