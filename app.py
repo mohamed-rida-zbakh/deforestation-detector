@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import json
 import numpy as np
-import traceback  # 🔥 AJOUT
+import traceback  # 🔥 AJOUT - Pour voir les erreurs détaillées
 
 # Configuration de la page
 st.set_page_config(
@@ -20,10 +20,10 @@ st.set_page_config(
 )
 
 # 🔥 AJOUT - Initialiser session_state pour garder les résultats
-if 'resultats' not in st.session_state:
-    st.session_state.resultats = None
-if 'analyse_effectuee' not in st.session_state:
-    st.session_state.analyse_effectuee = False
+if 'resultats_affiches' not in st.session_state:
+    st.session_state.resultats_affiches = None
+if 'analyse_en_cours' not in st.session_state:
+    st.session_state.analyse_en_cours = False
 
 # Titre principal
 st.title("🌳 Détection de Déforestation par Satellite")
@@ -54,6 +54,7 @@ def init_gee():
         st.error(f"❌ Erreur de connexion GEE : {e}")
         return False
 
+# Initialiser GEE
 gee_ok = init_gee()
 
 # ============================================
@@ -81,12 +82,13 @@ with st.sidebar:
     
     st.divider()
     
+    # 🔥 MODIFICATION - Bouton qui déclenche l'analyse
     analyser = st.button("🔍 ANALYSER LA DÉFORESTATION", type="primary", use_container_width=True)
     
     # 🔥 AJOUT - Bouton pour réinitialiser
     if st.button("🔄 Nouvelle analyse", use_container_width=True):
-        st.session_state.resultats = None
-        st.session_state.analyse_effectuee = False
+        st.session_state.resultats_affiches = None
+        st.session_state.analyse_en_cours = False
         st.rerun()
 
 # ============================================
@@ -94,26 +96,47 @@ with st.sidebar:
 # ============================================
 
 def creer_carte_folium(lat, lon, rayon_km):
+    """Crée une carte interactive avec folium"""
     m = folium.Map(location=[lat, lon], zoom_start=10, control_scale=True)
-    folium.Circle(radius=rayon_km * 1000, location=[lat, lon], color='red', weight=2, fill=True, fill_opacity=0.1, popup=f"Zone d'étude : {rayon_km} km").add_to(m)
-    folium.Marker([lat, lon], popup=f"Centre: {lat}, {lon}", icon=folium.Icon(color='green', icon='tree', prefix='fa')).add_to(m)
+    
+    folium.Circle(
+        radius=rayon_km * 1000,
+        location=[lat, lon],
+        color='red',
+        weight=2,
+        fill=True,
+        fill_opacity=0.1,
+        popup=f"Zone d'étude : {rayon_km} km"
+    ).add_to(m)
+    
+    folium.Marker(
+        [lat, lon],
+        popup=f"Centre: {lat}, {lon}",
+        icon=folium.Icon(color='green', icon='tree', prefix='fa')
+    ).add_to(m)
+    
     folium.LayerControl().add_to(m)
     return m
 
 def calculer_deforestation(lat, lon, rayon_km, annee_ref, annee_recente, seuil_ndvi, nuages_max):
+    """Calcule la surface déforestée en hectares"""
+    
     point = ee.Geometry.Point([lon, lat])
     roi = point.buffer(rayon_km * 1000)
     
     def get_landsat(annee):
         start = f"{annee}-06-01"
         end = f"{annee}-08-31"
+        
         collection = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2') \
             .filterDate(start, end) \
             .filterBounds(roi) \
             .filter(ee.Filter.lt('CLOUD_COVER', nuages_max))
+        
         def scale_image(img):
             optical = img.select('SR_B.').multiply(0.0000275).add(-0.2)
             return img.addBands(optical, None, True)
+        
         return collection.map(scale_image).median().clip(roi)
     
     def calculate_ndvi(img):
@@ -141,16 +164,33 @@ def calculer_deforestation(lat, lon, rayon_km, annee_ref, annee_recente, seuil_n
         maxPixels=1e9  # 🔥 AJOUT
     )
     
-    ndvi_ref_moyen = ndvi_ref.reduceRegion(reducer=ee.Reducer.mean(), geometry=roi, scale=30, bestEffort=True)
-    ndvi_recent_moyen = ndvi_recent.reduceRegion(reducer=ee.Reducer.mean(), geometry=roi, scale=30, bestEffort=True)
+    ndvi_ref_moyen = ndvi_ref.reduceRegion(
+        reducer=ee.Reducer.mean(),
+        geometry=roi,
+        scale=30,
+        bestEffort=True
+    )
+    
+    ndvi_recent_moyen = ndvi_recent.reduceRegion(
+        reducer=ee.Reducer.mean(),
+        geometry=roi,
+        scale=30,
+        bestEffort=True
+    )
     
     try:
         surface_ha = surface_deforestation.getInfo().get('deforestation', 0)
         ndvi_ref_val = ndvi_ref_moyen.getInfo().get('NDVI', 0)
         ndvi_recent_val = ndvi_recent_moyen.getInfo().get('NDVI', 0)
-        return {'surface_ha': surface_ha, 'ndvi_ref': ndvi_ref_val, 'ndvi_recent': ndvi_recent_val}
+        
+        return {
+            'surface_ha': surface_ha,
+            'ndvi_ref': ndvi_ref_val,
+            'ndvi_recent': ndvi_recent_val,
+            'roi': roi
+        }
     except Exception as e:
-        st.error(f"Erreur GEE: {e}")
+        st.error(f"Erreur GEE détaillée: {e}")
         return None
 
 # ============================================
@@ -158,47 +198,59 @@ def calculer_deforestation(lat, lon, rayon_km, annee_ref, annee_recente, seuil_n
 # ============================================
 
 if analyser:
-    st.session_state.analyse_effectuee = True
+    st.session_state.analyse_en_cours = True
     with st.spinner("🛰️ Analyse des images satellite en cours... (20-40 secondes)"):
         if not gee_ok:
             st.error("❌ Google Earth Engine n'est pas configuré.")
         else:
             try:
-                resultats = calculer_deforestation(lat, lon, rayon_km, annee_ref, annee_recente, seuil_ndvi, nuages_max)
+                resultats = calculer_deforestation(
+                    lat, lon, rayon_km,
+                    annee_ref, annee_recente,
+                    seuil_ndvi, nuages_max
+                )
+                
                 if resultats:
-                    st.session_state.resultats = {
+                    st.session_state.resultats_affiches = {
                         'surface_ha': resultats['surface_ha'],
                         'ndvi_ref': resultats['ndvi_ref'],
                         'ndvi_recent': resultats['ndvi_recent'],
-                        'lat': lat, 'lon': lon, 'rayon_km': rayon_km,
-                        'annee_ref': annee_ref, 'annee_recente': annee_recente,
-                        'seuil_ndvi': seuil_ndvi, 'nuages_max': nuages_max
+                        'lat': lat,
+                        'lon': lon,
+                        'rayon_km': rayon_km,
+                        'annee_ref': annee_ref,
+                        'annee_recente': annee_recente,
+                        'seuil_ndvi': seuil_ndvi,
+                        'nuages_max': nuages_max
                     }
                     st.success("✅ Analyse terminée avec succès !")
                 else:
                     st.error("❌ L'analyse n'a pas pu aboutir")
+                    st.session_state.analyse_en_cours = False
             except Exception as e:
                 st.error(f"❌ Erreur: {e}")
                 st.code(traceback.format_exc())
+                st.session_state.analyse_en_cours = False
 
 # ============================================
-# AFFICHAGE DES RÉSULTATS (s'ils existent)
+# AFFICHAGE DES RÉSULTATS (si présents)
 # ============================================
 
-if st.session_state.resultats:
-    res = st.session_state.resultats
+if st.session_state.resultats_affiches:
+    res = st.session_state.resultats_affiches
     
-    surface_totale_ha = 3.14159 * (res['rayon_km'] * 1000)**2 / 10000
-    pourcentage = (res['surface_ha'] / surface_totale_ha) * 100 if surface_totale_ha > 0 else 0
-    variation_ndvi = res['ndvi_recent'] - res['ndvi_ref']
-    
+    # Métriques
     st.subheader("📊 Résultats de l'analyse")
     
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("📅 Année référence", res['annee_ref'])
     col2.metric("📅 Année récente", res['annee_recente'])
     col3.metric("🌲 NDVI référence", f"{res['ndvi_ref']:.3f}")
-    col4.metric("🌳 NDVI récent", f"{res['ndvi_recent']:.3f}", delta=f"{variation_ndvi:.3f}")
+    col4.metric("🌳 NDVI récent", f"{res['ndvi_recent']:.3f}", 
+                delta=f"{res['ndvi_recent'] - res['ndvi_ref']:.3f}")
+    
+    surface_totale_ha = 3.14159 * (res['rayon_km'] * 1000)**2 / 10000
+    pourcentage = (res['surface_ha'] / surface_totale_ha) * 100 if surface_totale_ha > 0 else 0
     
     col5, col6, col7 = st.columns(3)
     col5.metric("🔥 Surface déforestée", f"{res['surface_ha']:,.0f} ha")
@@ -209,18 +261,31 @@ if st.session_state.resultats:
     else:
         col7.metric("📉 Taux déforestation", f"{pourcentage:.1f}%")
     
+    # Carte
     st.subheader("🗺️ Carte de la zone d'étude")
     carte = creer_carte_folium(res['lat'], res['lon'], res['rayon_km'])
     st_folium(carte, width=800, height=500)
     
+    # Graphique NDVI
     st.subheader("📈 Évolution du NDVI")
+    
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=[str(res['annee_ref']), str(res['annee_recente'])], y=[res['ndvi_ref'], res['ndvi_recent']], marker_color=["#228B22", "#FF8C00"], text=[f"{res['ndvi_ref']:.3f}", f"{res['ndvi_recent']:.3f}"], textposition="auto"))
-    fig.add_hline(y=res['seuil_ndvi'], line_dash="dash", line_color="red", annotation_text=f"Seuil forêt = {res['seuil_ndvi']}")
-    fig.update_layout(title="Comparaison du NDVI", xaxis_title="Année", yaxis_title="NDVI", yaxis_range=[-0.2, 0.9], height=450)
+    fig.add_trace(go.Bar(
+        x=[str(res['annee_ref']), str(res['annee_recente'])],
+        y=[res['ndvi_ref'], res['ndvi_recent']],
+        marker_color=["#228B22", "#FF8C00"],
+        text=[f"{res['ndvi_ref']:.3f}", f"{res['ndvi_recent']:.3f}"],
+        textposition="auto"
+    ))
+    fig.add_hline(y=res['seuil_ndvi'], line_dash="dash", line_color="red",
+                  annotation_text=f"Seuil forêt = {res['seuil_ndvi']}")
+    fig.update_layout(title="Comparaison du NDVI", xaxis_title="Année", 
+                      yaxis_title="NDVI", yaxis_range=[-0.2, 0.9], height=450)
     st.plotly_chart(fig, use_container_width=True)
     
+    # Interprétation
     st.subheader("📝 Interprétation")
+    
     if res['surface_ha'] > 100:
         st.error(f"🚨 **Alerte !** {res['surface_ha']:,.0f} hectares déforestés.")
     elif res['surface_ha'] > 10:
@@ -228,25 +293,33 @@ if st.session_state.resultats:
     else:
         st.success(f"✅ **Peu ou pas de déforestation** détectée.")
     
-    if variation_ndvi < -0.1:
-        st.warning(f"📉 Forte baisse du NDVI ({variation_ndvi:.3f})")
-    elif variation_ndvi < -0.05:
-        st.info(f"📉 Baisse modérée du NDVI ({variation_ndvi:.3f})")
+    variation = res['ndvi_recent'] - res['ndvi_ref']
+    if variation < -0.1:
+        st.warning(f"📉 Forte baisse du NDVI ({variation:.3f})")
+    elif variation < -0.05:
+        st.info(f"📉 Baisse modérée du NDVI ({variation:.3f})")
     else:
-        st.success(f"📈 NDVI stable ou en hausse ({variation_ndvi:.3f})")
+        st.success(f"📈 NDVI stable ou en hausse ({variation:.3f})")
     
+    # Export CSV
     st.subheader("⬇️ Export des résultats")
     df_export = pd.DataFrame({
-        'Indicateur': ['Latitude', 'Longitude', 'Rayon (km)', 'Année référence', 'Année récente', 'Seuil NDVI', 'NDVI référence', 'NDVI récent', 'Surface déforestée (ha)', 'Taux déforestation (%)'],
-        'Valeur': [res['lat'], res['lon'], res['rayon_km'], res['annee_ref'], res['annee_recente'], res['seuil_ndvi'], f"{res['ndvi_ref']:.3f}", f"{res['ndvi_recent']:.3f}", f"{res['surface_ha']:.0f}", f"{pourcentage:.1f}"]
+        'Indicateur': ['Latitude', 'Longitude', 'Rayon (km)', 'Année référence', 'Année récente',
+                       'Seuil NDVI', 'Nuages max (%)', 'NDVI référence', 'NDVI récent',
+                       'Surface déforestée (ha)', 'Taux déforestation (%)'],
+        'Valeur': [res['lat'], res['lon'], res['rayon_km'], res['annee_ref'], res['annee_recente'],
+                   res['seuil_ndvi'], res['nuages_max'], f"{res['ndvi_ref']:.3f}", f"{res['ndvi_recent']:.3f}",
+                   f"{res['surface_ha']:.0f}", f"{pourcentage:.1f}"]
     })
     csv = df_export.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Télécharger le rapport CSV", csv, f"deforestation_{res['annee_ref']}_{res['annee_recente']}.csv", "text/csv")
+    st.download_button("📥 Télécharger le rapport CSV", csv, 
+                       f"deforestation_{res['annee_ref']}_{res['annee_recente']}.csv", "text/csv")
 
-elif not st.session_state.analyse_effectuee:
+elif not st.session_state.analyse_en_cours and not st.session_state.resultats_affiches:
+    # Page d'accueil
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.info("👈 **Configurez les paramètres dans la barre latérale et cliquez sur ANALYSER**")
+        st.info("👈 **Configurez les paramètres et cliquez sur ANALYSER**")
         st.subheader("🌍 Comment ça fonctionne ?")
         st.markdown("""
         **📌 Principe :** Comparaison du NDVI entre deux dates
@@ -256,8 +329,16 @@ elif not st.session_state.analyse_effectuee:
         """)
     with col2:
         st.subheader("🗺️ Aperçu")
-        st_folium(creer_carte_folium(34.05, -6.85, 20), width=400, height=350)
+        carte_defaut = creer_carte_folium(34.05, -6.85, 20)
+        st_folium(carte_defaut, width=400, height=350)
 
 # Pied de page
 st.markdown("---")
-st.markdown("""<div style="text-align: center; color: gray; font-size: 12px;">🌳 Projet réalisé par <strong>Mohamed Rida Zbakh</strong> - Master TSIG</div>""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <div style="text-align: center; color: gray; font-size: 12px;">
+    🌳 Projet réalisé par <strong>Mohamed Rida Zbakh</strong> - Master TSIG
+    </div>
+    """,
+    unsafe_allow_html=True
+)
